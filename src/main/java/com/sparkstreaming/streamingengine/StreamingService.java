@@ -7,8 +7,19 @@ import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.streaming.StreamingQueryException;
+import org.apache.spark.streaming.Duration;
+import org.apache.spark.streaming.api.java.JavaDStream;
+import org.apache.spark.streaming.api.java.JavaPairDStream;
+import org.apache.spark.streaming.api.java.JavaReceiverInputDStream;
+import org.apache.spark.streaming.api.java.JavaStreamingContext;
+import org.apache.spark.streaming.twitter.TwitterUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import scala.Tuple2;
+import twitter4j.Status;
+
+import java.util.Arrays;
 
 @Service
 public class StreamingService {
@@ -19,19 +30,59 @@ public class StreamingService {
     @Autowired
     SparkSession sparkSession;
 
+    @Value("${twitter4j.oauth.accessToken}")
+    public String accessToken;
+
+    @Value("${twitter4j.oauth.accessTokenSecret}")
+    public String accessTokenSecret;
+
+    @Value("${twitter4j.oauth.consumerKey}")
+    public String consumerKey;
+
+    @Value("${twitter4j.oauth.consumerSecret}")
+    public String consumerSecret;
+
     public  void wordCount() throws StreamingQueryException {
 
-        Dataset<Row> df = sparkSession
-                .readStream()
-                .format("kafka")
-                .option("kafka.bootstrap.servers", "localhost:9092,localhost:9093,localhost:9094")
-                .option("subscribe", "testTopic")
-                .load();
-        df = df.selectExpr("CAST(key AS STRING)", "CAST(value AS STRING)");
+//        Dataset<Row> df = sparkSession
+//                .readStream()
+//                .format("kafka")
+//                .option("kafka.bootstrap.servers", "localhost:9092,localhost:9093,localhost:9094")
+//                .option("subscribe", "testTopic")
+//                .load();
+//        df = df.selectExpr("CAST(key AS STRING)", "CAST(value AS STRING)");
+//
+//        df.writeStream()
+//                .format("console")
+//                .start().awaitTermination();
 
-        df.writeStream()
-                .format("console")
-                .start().awaitTermination();
+        String[] filters = {"corona"};
+        System.setProperty("twitter4j.oauth.consumerKey", consumerKey);
+        System.setProperty("twitter4j.oauth.consumerSecret", consumerSecret);
+        System.setProperty("twitter4j.oauth.accessToken", accessToken);
+        System.setProperty("twitter4j.oauth.accessTokenSecret", accessTokenSecret);
+
+        JavaSparkContext ctx = JavaSparkContext.fromSparkContext(sparkSession.sparkContext());
+        JavaStreamingContext jssc = new JavaStreamingContext(ctx, new Duration(2000));
+
+        JavaReceiverInputDStream<Status> stream = TwitterUtils.createStream(jssc, filters);
+
+        JavaDStream<String> words = stream.flatMap(status -> Arrays.stream(status.getText().split(" ")).iterator());
+
+        JavaDStream<String> hash = words.filter(s -> s.startsWith("#"));
+
+
+        JavaPairDStream<String, Integer> hashPair = hash.mapToPair(s -> new Tuple2<>(s.substring(1), 1));
+        JavaPairDStream<String, Integer> finalPair = hashPair.reduceByKeyAndWindow(Integer::sum, new Duration(10000));
+
+        finalPair.foreachRDD((stringIntegerJavaPairRDD, time) -> stringIntegerJavaPairRDD.foreach(stringIntegerTuple2 -> System.out.println(stringIntegerTuple2._1+"\t"+stringIntegerTuple2._2)));
+
+        jssc.start();
+        try {
+            jssc.awaitTermination();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
 
     }
 
@@ -50,6 +101,7 @@ public class StreamingService {
         df.writeStream()
                 .format("console")
                 .start().awaitTermination();
+
 
 
 
